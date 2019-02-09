@@ -1,0 +1,346 @@
+pragma solidity >=0.4.0<0.6.0;
+
+contract Taxi {
+    address payable[100] participants;
+    uint nextParticipantIndex;      // represents the current number of participants also
+    mapping (address => uint) balances;
+    mapping (address => bool) participantsExistenceList;   // used to check existence of an address
+    mapping (address => bool) votings;      // used to check who voted 
+    address manager;
+    uint balance;
+    address payable driver;
+    uint driverLastPaymentTime;     // used to check that driver is paid once a month
+    uint driverSalary;
+    uint driverBalance;             // used to store driver's salary 
+    uint participantionFee;
+    uint regularExpenses;
+    uint regularExpensesLastPaymentTime; // used to check if the dealer is paid once each 6 months
+    uint participantsLastPaymentTime; // used to check if the participants are paid once each 6 months
+    address payable dealer;
+    bool carExist;
+    
+    event carIdLogger(bytes32 carId);
+    
+    // purchase car proposal variables
+    string buyCarId;
+    uint buyCarPrice;
+    uint buyOfferValidTime;
+    
+    // selling car proposal variables
+    uint sellCarPrice;
+    uint sellOfferValidTime;
+    uint sellApprovalStatus;
+
+
+    constructor () public payable{
+        nextParticipantIndex = 0;
+        manager = msg.sender;
+        participantionFee = 100 ether;
+        regularExpenses = 10 ether;
+        driverSalary = 20 ether;
+    }
+    
+    modifier onlyManager {
+        require(msg.sender == manager, "Only manager can call this function!");
+        _;
+    }
+    
+    modifier onlyCarDealer {
+        require(msg.sender == dealer, "Only car dealer can call this function!");
+       _;
+    }
+    
+    modifier onlyParticipant {
+        require(participantsExistenceList[msg.sender] != false , 
+        "Your are not a participant, ONLY participants can call this function!");
+        _;
+    }
+    
+    modifier singleVote {
+        // check if a participant voted before
+        require(votings[msg.sender] == false, "You cannot vote more than ONCE!");
+        _;
+    }
+    
+    modifier onlyDriver {
+        // Check if the function caller is the driver 
+        require(msg.sender == driver, "Only driver can call this function!");
+        _;
+    }
+    
+    function getBalance() public view returns (uint) {
+        return balance / 1e18;
+    }
+    
+    function join() external payable {
+        // check if participant balance is enough
+        require (msg.value >= participantionFee, 
+        "You must have at least 100 ether 'the participant Fee'!");
+        
+        // prevent double joining 
+        require(participantsExistenceList[msg.sender] == false, 
+        "You are already joined, you cannot join more than once!");
+        
+        // calculate the refund to be transfered back to participant after 
+        // charging the participantion fee
+        // uint refund = msg.value - participantionFee;
+        // msg.sender.transfer(refund);
+        
+        // add to the participants list and to the mapping
+        participants[nextParticipantIndex] = msg.sender;
+        nextParticipantIndex += 1;
+        
+        // increase the balance
+        balance += participantionFee;
+        
+        // add to the existence mapping
+        participantsExistenceList[msg.sender] = true;
+
+    }
+    
+    function setCarDealer(address payable _dealerAddress) public onlyManager {
+        // function used to set the passed car dealer by the manager
+        dealer = _dealerAddress;
+    }
+    
+    function carPropose(string memory idCar, uint priceCar, uint afterDays) public 
+    onlyCarDealer {
+        // function used to propose a car to the contract, done only by the car dealer
+        // validTime: (now + afterDays * 1 days) " in days"
+        
+        // 11111111111111111111111111111111
+        // check if the card ID is entered well as 32 digits
+        require(bytes(idCar).length == 32, "Car ID must be 32 digits!");
+        
+        buyCarId = idCar;
+        buyCarPrice = priceCar;   // in ether
+        buyOfferValidTime = now + afterDays * 1 days;
+
+    }
+    
+    function purchaseCar() public payable onlyManager {
+        // function called by the manager, used to send the car's money to the call dealer
+        // to purchase the proposed car from him 
+        
+        // check the validity of the time of the proposed car to purchase
+        require(buyOfferValidTime != 0, "There is no purchase proposal!");
+        
+        // check the validity of the time of the proposed car to purchase
+        require(buyOfferValidTime >= now, "Offer time is not valid!");
+        
+        // check the contract's balance for the car price then, 
+        // send the car price to the car dealer
+        require(address(this).balance >= buyCarPrice * 1e18, 
+        "Contract does not have enought balance to buy this car!");
+        carExist = true;
+        
+        balance -= buyCarPrice * 1e18;
+        
+        dealer.transfer(buyCarPrice * 1e18);
+    }
+    
+    function purchasePropose(uint _carPrice, uint _daysAfter) public 
+    onlyCarDealer {
+        // function used to propose the car owened by the contarct to be selled, 
+        // done only by the car dealer validTime: (now + _daysAter * 1 days) " in days"
+        
+        // check if teh contarct has a car to sellCarPrice
+        require(carExist, "Contarct does not have a car to propose for selling!");
+        
+        sellCarPrice = _carPrice;   // in ether
+        sellOfferValidTime = now + _daysAfter * 1 days;
+        sellApprovalStatus = 0;
+    }
+    
+    function approveSellProposal() public onlyParticipant singleVote {
+        // function used to vote on the car selling proposal, each participant can vote once
+        
+        // check if selling proposal exists
+        require(sellOfferValidTime != 0, "No cars proposed to be sold!");
+        
+        // check valid time 
+        require(sellOfferValidTime >= now , "Proposed purchase car valid time is over!");
+        
+        votings[msg.sender] = true;
+        
+        // if the fucntion caller is a participant and did not vote before, vote for 
+        // purchasing the case with an increament of one
+        sellApprovalStatus += 1;
+    }
+    
+    function sellCar() public payable onlyCarDealer {
+        // function used to sell the owned car if it has votes more than the half
+        // of the participantsExistenceList
+        require(sellApprovalStatus > nextParticipantIndex / 2, 
+        "Car sell proposal needs more than the half of the participants votes!");
+        
+        // check the validity of the time of the proposed car to be sold
+        require(sellOfferValidTime >= now, "Offer time is not valid!");
+        
+        // check for the sent value if it's less than the car price
+        require(msg.value >= sellCarPrice * 1e18, 
+        "Recieved amount of money is less than the car price to be sold! Send more!");
+        
+        // increase the balance 
+        balance += msg.value;
+        
+        carExist = false;
+    }
+    
+    function setDriver(address payable _driverAddr) public onlyManager {
+        // function used to assign a driver to the car, done only by the manager
+        driver = _driverAddr;
+    }
+    
+    function getCharge() public payable returns (uint) {
+        // function used to get charge for riding the taxi 
+        
+        // check if sent value is higher than zero
+        require(msg.value > 0, "The taxi charge must be higher than ZERO!");
+        
+        // check if the taxi exists 
+        require(carExist == true, "Taxi is not available yet!");
+        
+        // check if the taxi driver exists
+        require(driver != address(0), "Taxi driver is not set yet!");
+        
+        // increase the balance
+        balance += msg.value;
+        
+        return msg.value;
+    }
+    
+    function paySalary() public payable onlyManager returns (uint) {
+        // function called by the manager to pay the driver's salary once each month
+        // returns: the driver's salary
+        
+        // check if the taxi driver exists
+        require(driver != address(0), "Taxi driver is not set yet!");
+        
+        // check the contract's balance is enough to pay for the driver
+        require(balance >= driverSalary, 
+        "Contract does not have enought balance to pay for the driver!");
+        
+        // check if the taxi exists 
+        require(carExist == true, "Taxi is not available yet!");
+        
+        // check if it's called more than once a month
+        require(now > driverLastPaymentTime + 30 * 1 days, 
+        "Manager cannot pay the drivier's salary more than once a month!");
+        
+        // set the last payment time
+        driverLastPaymentTime = now;
+        
+        // pay for the driver "increase driver's balance but DON'T transfer to address " 
+        balance -= driverSalary;
+        driverBalance += driverSalary;
+        
+        return driverSalary;
+    }
+    
+    function getSalary() public payable onlyDriver returns (uint) {
+        // function called by the driver to withdraw his remaing balance 
+        // returns: the withdrawal amount
+        
+        // check if the driver has money to withdraw 
+        require(driverBalance > 0, "Driver has no money to withdraw!");
+        
+        // withdraw the fund to the address after deducting the amount from his balance
+        uint withdrawalAmount = driverBalance;
+        driverBalance -= withdrawalAmount;
+        driver.transfer(withdrawalAmount);
+        
+        return withdrawalAmount;
+    }
+    
+    function carExpenses() public payable onlyManager {
+        // function called by the manager to pay the dealer the regular expenses once each 6 months
+        
+        // check if the car dealer exists
+        require(dealer != address(0), "Car dealer is not set yet!");
+        
+        // check last payment time, must be no more than once each 6 months
+        require(now > regularExpensesLastPaymentTime + 180 * 1 days, 
+        "The car's fixed expenses cannot be paid more than once each 6 months!");
+        
+        // check if the contract's balance is enough to pay the car's fixed expenses then, 
+        // send the money to the car dealer
+        require(balance >= regularExpenses, 
+        "Contract does not have enought balance to pay the dealer the fixed expenses!");
+        
+        // set the last payment time
+        regularExpensesLastPaymentTime = now;
+        balance -= regularExpenses;
+        
+        dealer.transfer(regularExpenses);
+    }
+    
+    function payDividend() public onlyManager returns (uint) {
+        // function called by the manager, used to divide the profit among the participants
+        // returns: the single participant profit in ether
+        
+        // check last payment time, must be no more than once each 6 months
+        require(now > participantsLastPaymentTime + 180 * 1 days, 
+        "The participants cannot be paid more than once each 6 months!");
+        
+        // modify participants last payment time  
+        participantsLastPaymentTime = now;
+        
+        uint otherExpenses = 0;     // contract's balance minutes this = net profit
+        
+         // check contract's balance if it's higher than zero 
+        require(balance > 0, "Contarct's balance must be higher than ZERO!");
+        
+        // check if the fixed expenses is not paid yet, deducte it from the contract's balance 
+        if (now - regularExpensesLastPaymentTime > (160 * 1 days)) {
+             // pay the car fixed expenses  
+             otherExpenses += regularExpenses;
+        }
+        
+        // check if the driver's salary is not paid yet, deducte it from the contract's balance 
+        if (now - driverLastPaymentTime > (30 * 1 days)) {
+            // pay the car driver's salary  
+            otherExpenses += driverSalary;
+        }
+        
+        // check if there is remaining balance in the contract after cutting other expenses
+        require(balance - otherExpenses > 0, 
+        "No remaining balance in the contract after paying for the driver and dealer!");
+        
+        
+        // check if participants exist
+        require(nextParticipantIndex > 0, "No participants exist in the contract to be paid!");
+        
+        // divide the profit
+        uint singleProfit = (balance - otherExpenses) / nextParticipantIndex;
+    
+        
+        // transfer the single profit amount to the local balance of each participant
+        for (uint i = 0; i < nextParticipantIndex; i++) {
+            balances[participants[i]] += singleProfit;
+            balance -= singleProfit;
+        }
+        
+        return singleProfit / 1e18;
+    }
+    
+    function getDividend(address payable addr) public payable onlyParticipant {
+        // function called by the pparticipants to withdraw their remaining balance if exist
+        
+        // check if participants exist
+        require(nextParticipantIndex > 0, "No participants exist in the contract to be paid!");
+        
+        // check if participants have balance to withdraw
+        uint withdrawalAmount = balances[addr];
+        require(withdrawalAmount > 0, "You don't have money to withdraw!");
+        
+        // withdraw the fund by the participant after deducting the amounts from his/her balance
+        balances[addr] -= withdrawalAmount;
+        addr.transfer(withdrawalAmount);
+    }
+    
+    function () payable external{
+        
+    }
+}
+
